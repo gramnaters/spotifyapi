@@ -11,12 +11,13 @@ import time
 import random
 import json
 import re
+import os
 from functools import wraps
 
 app = Flask(__name__)
 
-# API Configuration
-API_KEY = "your-secret-api-key-here-change-this"  # Change this!
+# API Configuration - Read from environment variable
+API_KEY = os.environ.get('API_KEY', 'sk_live_abc123xyz7898724352678')  # Fallback key
 RATE_LIMIT = 100  # requests per minute
 
 # User agents for rotation
@@ -34,8 +35,18 @@ def require_api_key(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
         api_key = request.headers.get('X-API-Key')
+
+        # Debug logging
+        print(f"Received API Key: {api_key}")
+        print(f"Expected API Key: {API_KEY}")
+
         if not api_key or api_key != API_KEY:
-            return jsonify({'success': False, 'error': 'Invalid or missing API key'}), 401
+            return jsonify({
+                'success': False, 
+                'error': 'Invalid or missing API key',
+                'received': api_key[:10] + '...' if api_key else 'None',
+                'expected_prefix': API_KEY[:10] + '...'
+            }), 401
         return f(*args, **kwargs)
     return decorated_function
 
@@ -216,6 +227,7 @@ def index():
         'name': 'Spotify Checker API',
         'version': '1.0',
         'status': 'online',
+        'api_key_configured': bool(API_KEY),
         'endpoints': {
             '/check': 'POST - Check single account',
             '/batch': 'POST - Check multiple accounts',
@@ -227,7 +239,11 @@ def index():
 @app.route('/health')
 def health():
     """Health check endpoint"""
-    return jsonify({'status': 'healthy', 'timestamp': time.time()})
+    return jsonify({
+        'status': 'healthy', 
+        'timestamp': time.time(),
+        'api_key_set': bool(API_KEY)
+    })
 
 @app.route('/check', methods=['POST'])
 @require_api_key
@@ -308,6 +324,6 @@ def check_batch():
     return jsonify({'success': True, 'results': results})
 
 if __name__ == '__main__':
-    import os
     port = int(os.environ.get('PORT', 5000))
+    print(f"Starting API with key: {API_KEY[:10]}...")
     app.run(host='0.0.0.0', port=port, debug=False)
