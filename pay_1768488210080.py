@@ -67,6 +67,7 @@ def check_hotstar_api(cookies, cookie_file, result_dict, lock, working_folder, f
         # --- PARSING LOGIC FOR PAYMENT & EXPIRY ---
         plan_status = "NO❌"
         details_str = ""
+        plan_price = ""
         
         try:
             # Navigate to the Table Widget
@@ -101,22 +102,32 @@ def check_hotstar_api(cookies, cookie_file, result_dict, lock, working_folder, f
                     pay_desc_list = payment_mode_row.get('desc', [])
                     payment_mode = pay_desc_list[0] if pay_desc_list else "Unknown Payment"
                     
+                    # 3b. Get Plan Price (from second row title)
+                    pay_title_list = payment_mode_row.get('title', [])
+                    plan_price = pay_title_list[0] if pay_title_list else "Unknown Price"
+                        
                     # 4. Check Validity (Is it Active?)
                     is_active = False
+                    end_date_str = None
                     try:
                         # Format: "12 Jan, 2026 to 12 Apr, 2026"
                         if " to " in date_range:
+                            start_date_str = date_range.split(" to ")[0].strip()
                             end_date_str = date_range.split(" to ")[1].strip()
                             expiry_dt = datetime.strptime(end_date_str, "%d %b, %Y")
                             if expiry_dt >= datetime.now():
                                 is_active = True
-                                details_str = f"Plan: {plan_name}\nExpiry: {end_date_str}\nPayment: {payment_mode}"
+                                details_str = f"Plan: {plan_name}\nExpiry: {end_date_str}\nPayment: {payment_mode}\nPrice: {plan_price}\nStart: {start_date_str}"
                             else:
-                                details_str = f"EXPIRED: {plan_name} (Expired on {end_date_str})"
-                    except:
+                                details_str = f"EXPIRED: {plan_name} (Expired on {end_date_str})\nPrice: {plan_price}\nPayment: {payment_mode}"
+                        else:
+                            # No date range found - assume active (could be new format)
+                            is_active = True
+                            details_str = f"Plan: {plan_name}\nRange: {date_range}\nPayment: {payment_mode}\nPrice: {plan_price}"
+                    except Exception:
                         # If date parsing fails, assume active if it's the top row, but mark as check needed
                         is_active = True 
-                        details_str = f"Plan: {plan_name}\nRange: {date_range}\nPayment: {payment_mode}"
+                        details_str = f"Plan: {plan_name}\nRange: {date_range}\nPayment: {payment_mode}\nPrice: {plan_price}"
 
                     if is_active:
                         plan_status = f"{plan_name}✅"
@@ -141,7 +152,18 @@ def check_hotstar_api(cookies, cookie_file, result_dict, lock, working_folder, f
                 print(f"[+] {os.path.basename(cookie_file)}")
                 print(f"    └─ {plan_status}")
                 if details_str:
-                    print(f"    └─ Exp: {details_str.splitlines()[1].replace('Expiry: ', '')} | {details_str.splitlines()[2]}")
+                    lines = details_str.splitlines()
+                    if len(lines) >= 4:
+                        exp_info = lines[1].replace('Expiry: ', '').replace('Range: ', '')
+                        pay_info = lines[2].replace('Payment: ', '')
+                        price_info = lines[3].replace('Price: ', '')
+                        print(f"    └─ Expires: {exp_info} | {pay_info} | {price_info}")
+                    elif len(lines) >= 3:
+                        exp_info = lines[1].replace('Expiry: ', '').replace('Range: ', '')
+                        pay_info = lines[2]
+                        print(f"    └─ Expires: {exp_info} | {pay_info}")
+                    else:
+                        print(f"    └─ {details_str.replace(chr(10), ' | ')}")
 
                 os.makedirs(working_folder, exist_ok=True)
                 clean_plan = re.sub(r'[<>:"/\\|?*]', '', plan_status.replace("✅", "").strip())
