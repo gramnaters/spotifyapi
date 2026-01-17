@@ -13,6 +13,28 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 USERNAME = "@SkillIssueXD"
 DEBUG_MODE = False
 
+def check_geo_location():
+    """Check if running from India (required for Hotstar API)"""
+    try:
+        resp = requests.get('https://ipapi.co/json/', timeout=5)
+        data = resp.json()
+        country = data.get('country_code', 'Unknown')
+        city = data.get('city', 'Unknown')
+        ip = data.get('ip', 'Unknown')
+        
+        if country != 'IN':
+            print(f"\n⚠️  WARNING: You are running from {city}, {data.get('country_name', country)}")
+            print(f"   IP: {ip}")
+            print(f"   Hotstar API requires Indian IP address!")
+            print(f"   Use a VPN connected to India for this script to work.\n")
+            return False
+        else:
+            print(f"\n✅ Location: {city}, India ({ip})")
+            return True
+    except Exception:
+        print("\n⚠️  Could not verify location. Script may fail if not in India.")
+        return True  # Continue anyway
+
 def load_cookies_from_netscape_file(cookie_file):
     cookies = {}
     try:
@@ -229,7 +251,16 @@ def process_folder(input_folder, result_dict, thread_count, new_files):
             except: pass
 
 def main():
-    print("=" * 60 + "\n   JioHotstar API Checker v3.2 - Payment & Expiry\n" + "=" * 60)
+    print("=" * 60 + "\n   JioHotstar API Checker v3.3 - Payment & Expiry\n" + "=" * 60)
+    
+    # Check geo-location first
+    is_india = check_geo_location()
+    if not is_india:
+        proceed = input("Continue anyway? (y/n): ").strip().lower()
+        if proceed != 'y':
+            print("Exiting. Please connect to an Indian VPN and try again.")
+            return
+    
     input_folder = input("\nEnter Folder Path: ").strip().strip('"\'')
     try:
         thread_count = int(input("Threads (default 10): ").strip() or 10)
