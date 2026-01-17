@@ -60,6 +60,15 @@ def check_hotstar_api(cookies, cookie_file, result_dict, lock, working_folder, f
         
         if response.status_code != 200:
             with lock: result_dict['total'] += 1; result_dict['invalid'] += 1
+            if DEBUG_MODE:
+                print(f"[-] {os.path.basename(cookie_file)} -> HTTP {response.status_code}")
+            return 0
+
+        # Check if response is JSON (API) or HTML (auth failed/redirected)
+        content_type = response.headers.get('content-type', '')
+        if 'application/json' not in content_type:
+            with lock: result_dict['total'] += 1; result_dict['invalid'] += 1
+            print(f"[-] {os.path.basename(cookie_file)[:50]}... -> Session Expired/Invalid")
             return 0
 
         data = response.json()
@@ -182,8 +191,17 @@ def check_hotstar_api(cookies, cookie_file, result_dict, lock, working_folder, f
 
         return 1
 
+    except requests.exceptions.Timeout:
+        print(f"[!] {os.path.basename(cookie_file)[:40]}... -> Timeout")
+        with lock: result_dict['total'] += 1; result_dict['invalid'] += 1
+        return 0
+    except requests.exceptions.ConnectionError:
+        print(f"[!] {os.path.basename(cookie_file)[:40]}... -> Connection Error")
+        with lock: result_dict['total'] += 1; result_dict['invalid'] += 1
+        return 0
     except Exception as e:
-        print(f"[!] Error: {e}")
+        if DEBUG_MODE:
+            print(f"[!] Error on {os.path.basename(cookie_file)[:40]}: {e}")
         with lock: result_dict['total'] += 1; result_dict['invalid'] += 1
         return 0
 
@@ -223,7 +241,16 @@ def main():
     
     print(f"\nStarting API Check on {input_folder}...\n")
     process_folder(input_folder, result_dict, thread_count, new_files)
-    print(f"\n\nFinished! Valid: {result_dict['valid']} | Saved to: JioHotstar Cookies Hit")
+    
+    print(f"\n{'='*60}")
+    print(f"   RESULTS SUMMARY")
+    print(f"{'='*60}")
+    print(f"   Total Checked: {result_dict['total']}")
+    print(f"   Valid/Active:  {result_dict['valid']}")
+    print(f"   Invalid/Expired: {result_dict['invalid']}")
+    if result_dict['valid'] > 0:
+        print(f"   Saved to: JioHotstar Cookies Hit/")
+    print(f"{'='*60}")
 
 if __name__ == "__main__":
     main()
